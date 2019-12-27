@@ -29,10 +29,8 @@ class Generator(nn.Module):
 
 
 class CoarseGenerator(nn.Module):
-    def __init__(self, input_dim, cnum, use_cuda=True, device_ids=None):
+    def __init__(self, input_dim, cnum):
         super(CoarseGenerator, self).__init__()
-        self.use_cuda = use_cuda
-        self.device_ids = device_ids
 
         self.conv1 = gen_conv(input_dim + 2, cnum, 5, 1, 2)
         self.conv2_downsample = gen_conv(cnum, cnum*2, 3, 2, 1)
@@ -58,9 +56,8 @@ class CoarseGenerator(nn.Module):
     def forward(self, x, mask):
         # For indicating the boundaries of images
         ones = torch.ones(x.size(0), 1, x.size(2), x.size(3))
-        if self.use_cuda:
-            ones = ones.cuda()
-            mask = mask.cuda()
+        ones = ones.to(x.device)
+        mask = mask.to(x.device)
         # 5 x 256 x 256
         x = self.conv1(torch.cat([x, ones, mask], dim=1))
         x = self.conv2_downsample(x)
@@ -92,10 +89,8 @@ class CoarseGenerator(nn.Module):
 
 
 class FineGenerator(nn.Module):
-    def __init__(self, input_dim, cnum, use_cuda=True, device_ids=None):
+    def __init__(self, input_dim, cnum):
         super(FineGenerator, self).__init__()
-        self.use_cuda = use_cuda
-        self.device_ids = device_ids
 
         # 3 x 256 x 256
         self.conv1 = gen_conv(input_dim + 2, cnum, 5, 1, 2)
@@ -123,7 +118,7 @@ class FineGenerator(nn.Module):
         self.pmconv5 = gen_conv(cnum*4, cnum*4, 3, 1, 1)
         self.pmconv6 = gen_conv(cnum*4, cnum*4, 3, 1, 1, activation='relu')
         self.contextul_attention = ContextualAttention(ksize=3, stride=1, rate=2, fuse_k=3, softmax_scale=10,
-                                                       fuse=True, use_cuda=self.use_cuda, device_ids=self.device_ids)
+                                                       fuse=True)
         self.pmconv9 = gen_conv(cnum*4, cnum*4, 3, 1, 1)
         self.pmconv10 = gen_conv(cnum*4, cnum*4, 3, 1, 1)
         self.allconv11 = gen_conv(cnum*8, cnum*4, 3, 1, 1)
@@ -138,9 +133,8 @@ class FineGenerator(nn.Module):
         x1_inpaint = x_stage1 * mask + xin * (1. - mask)
         # For indicating the boundaries of images
         ones = torch.ones(xin.size(0), 1, xin.size(2), xin.size(3))
-        if self.use_cuda:
-            ones = ones.cuda()
-            mask = mask.cuda()
+        ones = ones.to(x_stage1.device)
+        mask = mask.to(x_stage1.device)
         # conv branch
         xnow = torch.cat([x1_inpaint, ones, mask], dim=1)
         x = self.conv1(xnow)
@@ -191,8 +185,6 @@ class ContextualAttention(nn.Module):
         self.fuse_k = fuse_k
         self.softmax_scale = softmax_scale
         self.fuse = fuse
-        self.use_cuda = use_cuda
-        self.device_ids = device_ids
 
     def forward(self, f, b, mask=None):
         """ Contextual attention layer implementation.
@@ -246,8 +238,7 @@ class ContextualAttention(nn.Module):
         # process mask
         if mask is None:
             mask = torch.zeros([int_bs[0], 1, int_bs[2], int_bs[3]])
-            if self.use_cuda:
-                mask = mask.cuda()
+            mask = mask.to(f.device)
         else:
             mask = F.interpolate(mask, scale_factor=1./(4*self.rate), mode='nearest')
         int_ms = list(mask.size())
@@ -269,8 +260,7 @@ class ContextualAttention(nn.Module):
         k = self.fuse_k
         scale = self.softmax_scale    # to fit the PyTorch tensor image value range
         fuse_weight = torch.eye(k).view(1, 1, k, k)  # 1*1*k*k
-        if self.use_cuda:
-            fuse_weight = fuse_weight.cuda()
+        fuse_weight = fuse_weight.to(f.device)
 
         for xi, wi, raw_wi in zip(f_groups, w_groups, raw_w_groups):
             '''
@@ -282,8 +272,7 @@ class ContextualAttention(nn.Module):
             '''
             # conv for compare
             escape_NaN = torch.FloatTensor([1e-4])
-            if self.use_cuda:
-                escape_NaN = escape_NaN.cuda()
+            escape_NaN = escape_NaN.to(f.device)
             wi = wi[0]  # [L, C, k, k]
             max_wi = torch.max(torch.sqrt(reduce_sum(torch.pow(wi, 2),
                                                      axis=[1, 2, 3],
@@ -337,16 +326,14 @@ class ContextualAttention(nn.Module):
         h_add = torch.arange(int_fs[2]).view([1, 1, int_fs[2], 1]).expand(int_fs[0], -1, -1, int_fs[3])
         w_add = torch.arange(int_fs[3]).view([1, 1, 1, int_fs[3]]).expand(int_fs[0], -1, int_fs[2], -1)
         ref_coordinate = torch.cat([h_add, w_add], dim=1)
-        if self.use_cuda:
-            ref_coordinate = ref_coordinate.cuda()
+        ref_coordinate = ref_coordinate.to(f.device)
 
         offsets = offsets - ref_coordinate
         # flow = pt_flow_to_image(offsets)
 
         flow = torch.from_numpy(flow_to_image(offsets.permute(0, 2, 3, 1).cpu().data.numpy())) / 255.
         flow = flow.permute(0, 3, 1, 2)
-        if self.use_cuda:
-            flow = flow.cuda()
+        flow = flow.to(f.device)
         # case2: visualize which pixels are attended
         # flow = torch.from_numpy(highlight_flow((offsets * mask.long()).cpu().data.numpy()))
 
@@ -400,12 +387,10 @@ def test_contextual_attention(args):
 
 
 class LocalDis(nn.Module):
-    def __init__(self, config, use_cuda=True, device_ids=None):
+    def __init__(self, config):
         super(LocalDis, self).__init__()
         self.input_dim = config['input_dim']
         self.cnum = config['ndf']
-        self.use_cuda = use_cuda
-        self.device_ids = device_ids
         self.dis_conv_module = DisConvModule(self.input_dim, self.cnum)
         self.linear = nn.Linear(self.cnum*4*8*8, 1)
 
@@ -417,12 +402,10 @@ class LocalDis(nn.Module):
 
 
 class GlobalDis(nn.Module):
-    def __init__(self, config, use_cuda=True, device_ids=None):
+    def __init__(self, config):
         super(GlobalDis, self).__init__()
         self.input_dim = config['input_dim']
         self.cnum = config['ndf']
-        self.use_cuda = use_cuda
-        self.device_ids = device_ids
 
         self.dis_conv_module = DisConvModule(self.input_dim, self.cnum)
         self.linear = nn.Linear(self.cnum*4*16*16, 1)
@@ -436,10 +419,8 @@ class GlobalDis(nn.Module):
 
 
 class DisConvModule(nn.Module):
-    def __init__(self, input_dim, cnum, use_cuda=True, device_ids=None):
+    def __init__(self, input_dim, cnum):
         super(DisConvModule, self).__init__()
-        self.use_cuda = use_cuda
-        self.device_ids = device_ids
 
         self.conv1 = dis_conv(input_dim, cnum, 5, 2, 2)
         self.conv2 = dis_conv(cnum, cnum*2, 5, 2, 2)

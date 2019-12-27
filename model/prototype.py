@@ -16,21 +16,19 @@ class Prototype(pl.LightningModule):
 
     def __init__(self,config):
         super(Prototype, self).__init__()
-        self.use_cuda = config.use_cuda
-        self.device_ids = config.device_ids
-        self.input_dim = config.input_dim
+        self.input_dim = config['input_dim']
         self.config = config
         # not the best model...
-        self.generator = Generator(config,self.use_cuda)
-        self.coarse_gen_num = config.coarse_gen_num
+        self.generator = Generator(config['netG'])
+        self.coarse_gen_num = config['coarse_gen_num']
         #build coarse discriminator
         coarse_dis_list = []
         for i in range(self.coarse_gen_num):
-            coarse_dis_list.append(NWK.LocalDis(config,self.use_cuda,self.device_ids))
+            coarse_dis_list.append(NWK.LocalDis(config['netD']))
         self.coarse_dis_cluster = nn.Sequential(*coarse_dis_list)
         #final discriminator
-        self.global_dis = NWK.GlobalDis(config,self.use_cuda,self.device_ids)
-        self.local_dis = NWK.LocalDis(config,self.use_cuda,self.device_ids)
+        self.global_dis = NWK.GlobalDis(config['netD'])
+        self.local_dis = NWK.LocalDis(config['netD'])
 
 
     def forward(self,x,  bboxes, masks,):
@@ -136,18 +134,17 @@ class Prototype(pl.LightningModule):
         return DataLoader(dst,num_workers=self.config['num_workers'],shuffle=True, batch_size=self.config['batch_size'])
 
 class Generator(nn.Module):
-    def __init__(self, config, use_cuda):
+    def __init__(self, config):
         super(Generator, self).__init__()
-        self.coarse_gen_num = config.coarse_gen_num
+        self.coarse_gen_num = config['coarse_gen_num']
         self.input_dim = config['input_dim']
         self.cnum = config['ngf']
-        self.use_cuda = use_cuda
 
         # build coarse_generator cluster
-        self.coarse_generator = CoarseGenerator(self.input_dim, self.cnum, self.use_cuda)
+        self.coarse_generator = CoarseGenerator(self.input_dim, self.cnum)
         self.coarse_generator.conv17 = NWK.gen_conv(self.cnum//2,self.input_dim*self.coarse_gen_num,3,1,1,activation='none')
         # build fine_generator
-        self.fine_generator = FineGenerator(self.input_dim * self.coarse_gen_num, self.cnum, self.use_cuda)
+        self.fine_generator = FineGenerator(self.input_dim * self.coarse_gen_num, self.cnum)
 
     def forward(self, x, mask):
         x_stage1 = self.coarse_generator(x,mask)
